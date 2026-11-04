@@ -20,8 +20,32 @@ git clone https://github.com/SumarCarry/my_first_python_app.git
 cd my_first_python_app
 
 3. Usage
-To start the habit tracker, simply run the main Python script from your terminal:
-python main.py
+Start the tracker on the computer that will host it:
+
+```sh
+python3 main.py
+```
+
+By default, the server listens on all network interfaces at port `8765`. Open
+`http://127.0.0.1:8765` on the host computer. To use it from another computer
+on the same local network, open `http://<host-computer-LAN-IP>:8765` in that
+computer's browser. Find the host's LAN IP in its network settings (for example,
+an address beginning with `192.168.` or `10.`).
+
+If the other computer cannot connect, allow inbound TCP traffic on port `8765`
+in the host computer's firewall and make sure both computers are on the same
+trusted network. The app stores its SQLite database beside `main.py`; keep that
+directory writable and back up `tracker.sqlite3` to preserve the data.
+
+To choose a different port or bind only to a specific interface:
+
+```sh
+python3 main.py --host 0.0.0.0 --port 9000
+```
+
+Use `--no-browser` when running on a headless host. This built-in server has no
+login or encryption, so use it only on a trusted private network; do not expose
+it directly to the public internet.
 
 (Note: If you are using a Mac or Linux environment, you might need to use python3 main.py)
 

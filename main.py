@@ -1,4 +1,6 @@
 import json
+import argparse
+import os
 import sqlite3
 import webbrowser
 from calendar import monthrange
@@ -10,8 +12,8 @@ from urllib.parse import parse_qs, urlparse
 
 APP_DIR = Path(__file__).resolve().parent
 DATABASE = APP_DIR / "tracker.sqlite3"
-HOST = "127.0.0.1"
-PORT = 8765
+DEFAULT_HOST = "0.0.0.0"
+DEFAULT_PORT = int(os.environ.get("PORT", "8765"))
 
 
 def connect_db():
@@ -267,11 +269,20 @@ class TrackerHandler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+	parser = argparse.ArgumentParser(description="Run the TRACKOID habit tracker web app.")
+	parser.add_argument("--host", default=os.environ.get("HOST", DEFAULT_HOST), help="Interface to listen on")
+	parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port to listen on")
+	parser.add_argument("--no-browser", action="store_true", default=bool(os.environ.get("PORT")), help="Do not open a browser on the server machine")
+	args = parser.parse_args()
+
 	initialize_db()
-	address = f"http://{HOST}:{PORT}"
-	print(f"TRACKOID is running at {address}")
-	webbrowser.open(address)
+	local_address = f"http://127.0.0.1:{args.port}"
+	print(f"TRACKOID is listening on {args.host}:{args.port}")
+	print(f"On this computer, open {local_address}")
+	print("On another computer on the same network, open http://<server-LAN-IP>:" + str(args.port))
+	if not args.no_browser:
+		webbrowser.open(local_address)
 	try:
-		ThreadingHTTPServer((HOST, PORT), TrackerHandler).serve_forever()
+		ThreadingHTTPServer((args.host, args.port), TrackerHandler).serve_forever()
 	except KeyboardInterrupt:
 		print("\nTracker stopped.")
