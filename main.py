@@ -11,18 +11,22 @@ from urllib.parse import parse_qs, urlparse
 
 
 APP_DIR = Path(__file__).resolve().parent
-DATABASE = APP_DIR / "tracker.sqlite3"
-DEFAULT_HOST = "0.0.0.0"
+DATABASE = Path(os.environ.get("TRACKER_DATABASE", str(APP_DIR / "tracker.sqlite3")))
+DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = int(os.environ.get("PORT", "8765"))
+MAX_REQUEST_BODY = 1024 * 1024
 
 
 def connect_db():
-	connection = sqlite3.connect(DATABASE)
+	connection = sqlite3.connect(DATABASE, timeout=10)
 	connection.row_factory = sqlite3.Row
 	connection.execute("PRAGMA foreign_keys = ON")
+	connection.execute("PRAGMA busy_timeout = 10000")
+	connection.execute("PRAGMA journal_mode = WAL")
 	return connection
 
 def initialize_db():
+	DATABASE.parent.mkdir(parents=True, exist_ok=True)
 	with connect_db() as connection:
 		connection.executescript(
 			"""
@@ -56,11 +60,28 @@ class TrackerHandler(BaseHTTPRequestHandler):
 		self.send_header("Cache-Control", "no-store")
 		self.send_header("Content-Length", str(len(body)))
 		self.end_headers()
-		self.wfile.write(body)
+		try:
+			self.wfile.write(body)
+		except BrokenPipeError:
+			pass
 
 	def read_json(self):
-		length = int(self.headers.get("Content-Length", "0"))
+		try:
+			length = int(self.headers.get("Content-Length", "0"))
+		except ValueError as error:
+			raise ValueError("Invalid Content-Length") from error
+		if length < 0 or length > MAX_REQUEST_BODY:
+			raise ValueError("Request body is too large")
 		return json.loads(self.rfile.read(length) or b"{}")
+
+	def read_object(self):
+		payload = self.read_json()
+		if not isinstance(payload, dict):
+			raise ValueError("JSON body must be an object")
+		return payload
+
+	def send_not_found(self):
+		self.send_json({"error": "Not found"}, 404)
 
 	def do_GET(self):
 		parsed = urlparse(self.path)
@@ -115,11 +136,11 @@ class TrackerHandler(BaseHTTPRequestHandler):
 				end = anchor.replace(day=monthrange(anchor.year, anchor.month)[1])
 			today = date.today()
 			with connect_db() as connection:
-				habit_dates = connection.execute("SELECT substr(created_at, 1, 10) AS created_day FROM habits").fetchall()
+				habit_dates = connection.execute("SELECT date(created_at, 'localtime') AS created_day FROM habits").fetchall()
 				logs = connection.execute(
 					"SELECT habit_logs.day, COUNT(*) AS completed FROM habit_logs "
 					"JOIN habits ON habits.id = habit_logs.habit_id "
-					"AND substr(habits.created_at, 1, 10) <= habit_logs.day "
+					"AND date(habits.created_at, 'localtime') <= habit_logs.day "
 					"WHERE habit_logs.completed = 1 AND habit_logs.day BETWEEN ? AND ? "
 					"GROUP BY habit_logs.day",
 					(start.isoformat(), end.isoformat()),
@@ -175,18 +196,22 @@ class TrackerHandler(BaseHTTPRequestHandler):
 			self.wfile.write(page)
 			return
 
-		self.send_error(404)
+		self.send_not_found()
 
 	def do_POST(self):
 		parsed = urlparse(self.path)
 		try:
-			payload = self.read_json()
-		except (json.JSONDecodeError, UnicodeDecodeError):
+			payload = self.read_object()
+		except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
 			self.send_json({"error": "Invalid JSON"}, 400)
 			return
 
 		if parsed.path == "/api/habits":
-			name = str(payload.get("name", "")).strip()
+			name = payload.get("name")
+			if not isinstance(name, str):
+				self.send_json({"error": "Habit name must be a string"}, 400)
+				return
+			name = name.strip()
 			if not name or len(name) > 80:
 				self.send_json({"error": "Habit names must be 1 to 80 characters"}, 400)
 				return
@@ -197,10 +222,17 @@ class TrackerHandler(BaseHTTPRequestHandler):
 			return
 
 		if parsed.path == "/api/tasks":
-			title = str(payload.get("title", "")).strip()
+			title = payload.get("title")
+			if not isinstance(title, str):
+				self.send_json({"error": "Task title must be a string"}, 400)
+				return
+			title = title.strip()
 			due_date = payload.get("due_date") or None
 			if not title or len(title) > 160:
 				self.send_json({"error": "Tasks must be 1 to 160 characters"}, 400)
+				return
+			if due_date and not isinstance(due_date, str):
+				self.send_json({"error": "Invalid due date"}, 400)
 				return
 			if due_date:
 				try:
@@ -223,8 +255,12 @@ class TrackerHandler(BaseHTTPRequestHandler):
 			try:
 				item_id = int(identifier)
 			except ValueError:
-				item_id = 0
-			completed = 1 if payload.get("completed") else 0
+				self.send_not_found()
+				return
+			if type(payload.get("completed")) is not bool:
+				self.send_json({"error": "completed must be a boolean"}, 400)
+				return
+			completed = int(payload["completed"])
 			if table == "habits":
 				selected_day = payload.get("date", date.today().isoformat())
 				try:
@@ -233,6 +269,9 @@ class TrackerHandler(BaseHTTPRequestHandler):
 					self.send_json({"error": "Invalid date"}, 400)
 					return
 				with connect_db() as connection:
+					if connection.execute("SELECT 1 FROM habits WHERE id = ?", (item_id,)).fetchone() is None:
+						self.send_json({"error": "Habit not found"}, 404)
+						return
 					connection.execute(
 						"INSERT INTO habit_logs (habit_id, day, completed) VALUES (?, ?, ?) "
 						"ON CONFLICT(habit_id, day) DO UPDATE SET completed = excluded.completed",
@@ -240,28 +279,34 @@ class TrackerHandler(BaseHTTPRequestHandler):
 					)
 			elif table == "tasks":
 				with connect_db() as connection:
-					connection.execute("UPDATE tasks SET completed = ? WHERE id = ?", (completed, item_id))
+					cursor = connection.execute("UPDATE tasks SET completed = ? WHERE id = ?", (completed, item_id))
+					if cursor.rowcount == 0:
+						self.send_json({"error": "Task not found"}, 404)
+						return
 			else:
-				self.send_error(404)
+				self.send_not_found()
 				return
 			self.send_json({"ok": True})
 			return
 
-		self.send_error(404)
+		self.send_not_found()
 
 	def do_DELETE(self):
 		parts = urlparse(self.path).path.strip("/").split("/")
 		if len(parts) != 3 or parts[0] != "api" or parts[1] not in ("habits", "tasks"):
-			self.send_error(404)
+			self.send_not_found()
 			return
 		try:
 			item_id = int(parts[2])
 		except ValueError:
-			self.send_error(404)
+			self.send_not_found()
 			return
 		table = "habits" if parts[1] == "habits" else "tasks"
 		with connect_db() as connection:
-			connection.execute(f"DELETE FROM {table} WHERE id = ?", (item_id,))
+			cursor = connection.execute(f"DELETE FROM {table} WHERE id = ?", (item_id,))
+			if cursor.rowcount == 0:
+				self.send_json({"error": f"{parts[1][:-1].capitalize()} not found"}, 404)
+				return
 		self.send_json({"ok": True})
 
 	def log_message(self, format_string, *args):
