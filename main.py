@@ -12,8 +12,11 @@ from urllib.parse import parse_qs, urlparse
 
 APP_DIR = Path(__file__).resolve().parent
 DATABASE = Path(os.environ.get("TRACKER_DATABASE", str(APP_DIR / "tracker.sqlite3")))
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = int(os.environ.get("PORT", "8765"))
+DEFAULT_HOST = os.environ.get("HOST", "0.0.0.0")
+try:
+	DEFAULT_PORT = int(os.environ.get("PORT", "8765"))
+except ValueError:
+	DEFAULT_PORT = 8765
 MAX_REQUEST_BODY = 1024 * 1024
 
 
@@ -186,7 +189,7 @@ class TrackerHandler(BaseHTTPRequestHandler):
 			)
 			return
 
-		if parsed.path == "/":
+		if parsed.path in ("/", "/index.html"):
 			page = (APP_DIR / "index.html").read_bytes()
 			self.send_response(200)
 			self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -227,11 +230,13 @@ class TrackerHandler(BaseHTTPRequestHandler):
 				self.send_json({"error": "Task title must be a string"}, 400)
 				return
 			title = title.strip()
-			due_date = payload.get("due_date") or None
+			due_date = payload.get("due_date")
 			if not title or len(title) > 160:
 				self.send_json({"error": "Tasks must be 1 to 160 characters"}, 400)
 				return
-			if due_date and not isinstance(due_date, str):
+			if due_date == "":
+				due_date = None
+			if due_date is not None and not isinstance(due_date, str):
 				self.send_json({"error": "Invalid due date"}, 400)
 				return
 			if due_date:
@@ -315,7 +320,7 @@ class TrackerHandler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser(description="Run the TRACKOID habit tracker web app.")
-	parser.add_argument("--host", default=os.environ.get("HOST", DEFAULT_HOST), help="Interface to listen on")
+	parser.add_argument("--host", default=DEFAULT_HOST, help="Interface to listen on (default: all network interfaces)")
 	parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port to listen on")
 	parser.add_argument("--no-browser", action="store_true", default=bool(os.environ.get("PORT")), help="Do not open a browser on the server machine")
 	args = parser.parse_args()
@@ -327,7 +332,13 @@ if __name__ == "__main__":
 	print("On another computer on the same network, open http://<server-LAN-IP>:" + str(args.port))
 	if not args.no_browser:
 		webbrowser.open(local_address)
+	class ReusableHTTPServer(ThreadingHTTPServer):
+		allow_reuse_address = True
+
 	try:
-		ThreadingHTTPServer((args.host, args.port), TrackerHandler).serve_forever()
+		ReusableHTTPServer((args.host, args.port), TrackerHandler).serve_forever()
 	except KeyboardInterrupt:
 		print("\nTracker stopped.")
+	except OSError as error:
+		print(f"Could not start TRACKOID on {args.host}:{args.port}: {error}")
+		raise SystemExit(1)
