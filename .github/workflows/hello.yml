@@ -1,16 +1,16 @@
 name: Hello Actions
 
-on: {push}
+on: [push]
 
-jobs: 
- greet:
-  runs-on: ubuntu-latest
-  steps:
-    - name: Say hello
-      run: echo "Hello from Github Actions!"
+jobs:
+  greet:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Say hello
+        run: echo "Hello from GitHub Actions!"
 
-    - name: Show some context 
-      run: |
-      echo "Repo:  ${{ github.repository }}"
-      echo "Branch: ${{ github.ref_name }}"
-      echo "Actor: ${{ github.actor }}"
+      - name: Show some context
+        run: |
+          echo "Repo:   ${{ github.repository }}"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Actor:  ${{ github.actor }}"
