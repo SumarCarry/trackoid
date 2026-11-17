@@ -1,8 +1,8 @@
 name: Hello Actions
 
 on:
-  schedule:
-    - cron: "*/15 * * * *"   # every 15 minutes
+  push:
+    branches: [main]
   workflow_dispatch:
 jobs:
   greet:
